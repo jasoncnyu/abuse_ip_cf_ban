@@ -1,8 +1,4 @@
 <?php
-// ip_blocker.php: Automated log analysis + AbuseIPDB + Cloudflare blocking + PHP-level fallback
-
-require_once '_common.php';
-
 const ACCESS_LOG = '/var/log/nginx/access.log'; // Update with actual log path
 const CLOUD_FLARE_API_KEY = 'YOUR_CLOUDFLARE_API_KEY';
 const CLOUD_FLARE_EMAIL = 'YOUR_EMAIL@example.com';
@@ -14,25 +10,33 @@ const BAN_IP_LIST = '/home/web/ipban.txt';
 const KEYWORDS = ['wp-login.php', 'xmlrpc.php', 'admin', 'sqlmap'];
 
 // 1. Extract suspicious IPs from recent log lines based on request frequency and keywords
-function get_suspicious_ips($log_path, $threshold = 100) {
-    exec("tail -n 10000 $log_path", $lines);
-    $ip_counts = [];
+function get_suspicious_ips($logPath, $threshold = 10): array {
+    exec("tail -n 1000 $logPath", $lines);
+    $ipCounts = [];
+    $keywordHits = [];
 
     foreach ($lines as $line) {
         if (preg_match('/^(\d+\.\d+\.\d+\.\d+)/', $line, $match)) {
             $ip = $match[1];
+            if (!isset($ipCounts[$ip])) $ipCounts[$ip] = 0;
+            $ipCounts[$ip]++;
+
             foreach (KEYWORDS as $kw) {
                 if (strpos($line, $kw) !== false) {
-                    if (!isset($ip_counts[$ip])) $ip_counts[$ip] = 0;
-                    $ip_counts[$ip]++;
+                    $keywordHits[$ip] = true;
                     break;
                 }
             }
         }
     }
 
-    // Return only IPs exceeding the threshold
-    return array_filter($ip_counts, fn($cnt) => $cnt >= $threshold);
+    $result = [];
+    foreach ($ipCounts as $ip => $cnt) {
+        if ($cnt >= $threshold || isset($keywordHits[$ip])) {
+            $result[$ip] = $cnt;
+        }
+    }
+    return $result;
 }
 
 // 2. Query abuse score from AbuseIPDB
