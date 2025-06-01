@@ -19,8 +19,8 @@ const BAN_IP_LIST = '/path/to/blocked_ips.txt';
 const KEYWORDS = ['wp-login.php', 'xmlrpc.php', 'admin', 'sqlmap'];
 const TIME_WINDOW_SECONDS = 3600;       // Look back 1 hour
 const ABUSE_SCORE_THRESHOLD = 80;       // Block if AbuseIPDB score is 80+
-const LOG_LINE_COUNT = 1000;            // Tail last 1000 lines
-const REQUEST_THRESHOLD = 100;          // Block if over 100 requests
+const LOG_LINE_COUNT = 10000;            // Tail last n lines
+const REQUEST_THRESHOLD = 100;          // Block if over m requests
 ```
 
 ### ⚙️ Choosing Execution Interval
