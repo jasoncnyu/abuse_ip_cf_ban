@@ -9,15 +9,32 @@ const BAN_IP_LIST = '/home/web/ipban.txt';
 // List of suspicious keywords to trigger IP counting
 const KEYWORDS = ['wp-login.php', 'xmlrpc.php', 'admin', 'sqlmap'];
 
+// Adjustable Parameters
+const TIME_WINDOW_SECONDS = 3600; // 1 hour
+const ABUSE_SCORE_THRESHOLD = 80;
+const LOG_LINE_COUNT = 1000;
+const REQUEST_THRESHOLD = 100;
+
 // 1. Extract suspicious IPs from recent log lines based on request frequency and keywords
-function get_suspicious_ips($logPath, $threshold = 10): array {
-    exec("tail -n 1000 $logPath", $lines);
+function get_suspicious_ips($logPath, $threshold = REQUEST_THRESHOLD): array {
+    exec("tail -n " . LOG_LINE_COUNT . " $logPath", $lines);
     $ipCounts = [];
     $keywordHits = [];
+    $result = [];
+    $timeLimit = time() - TIME_WINDOW_SECONDS;
+    $recentLineFound = false;
 
     foreach ($lines as $line) {
-        if (preg_match('/^(\d+\.\d+\.\d+\.\d+)/', $line, $match)) {
+        if (preg_match('/^(\d+\.\d+\.\d+\.\d+) - - \[(.*?)\]/', $line, $match)) {
             $ip = $match[1];
+            $timeStr = $match[2];
+            $timestamp = strtotime(substr($timeStr, 0, 20));
+            if ($timestamp === false || $timestamp < $timeLimit) {
+                continue;
+            }
+
+            $recentLineFound = true;
+
             if (!isset($ipCounts[$ip])) $ipCounts[$ip] = 0;
             $ipCounts[$ip]++;
 
@@ -30,12 +47,21 @@ function get_suspicious_ips($logPath, $threshold = 10): array {
         }
     }
 
-    $result = [];
+    if (!$recentLineFound) {
+        echo "No log entries within the past hour.\n";
+        return [];
+    }
+
     foreach ($ipCounts as $ip => $cnt) {
         if ($cnt >= $threshold || isset($keywordHits[$ip])) {
             $result[$ip] = $cnt;
         }
     }
+
+    if (empty($result)) {
+        echo "No suspicious IPs found within the last hour.\n";
+    }
+
     return $result;
 }
 
@@ -91,9 +117,10 @@ function add_ip_to_php_denylist($ip, $filepath) {
 // === Execution starts here ===
 $ips = get_suspicious_ips(ACCESS_LOG);
 foreach ($ips as $ip => $cnt) {
-    echo "Checking: $ip (Count: $cnt)\n";
+    echo "Checking: $ip (Count: $cnt) ";
     $score = get_abuse_score($ip);
-    if ($score >= 50) {
+    echo $cnt."<br>";
+    if ($score >= ABUSE_SCORE_THRESHOLD) {
         echo "Blocking: $ip (Score: $score)\n";
         $res = block_ip_cloudflare($ip);
         echo "Result: " . json_encode($res) . "\n";
