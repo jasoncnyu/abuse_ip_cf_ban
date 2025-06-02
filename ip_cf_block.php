@@ -1,8 +1,10 @@
 <?php
 const ACCESS_LOG = '/var/log/nginx/access.log'; // Update with actual log path
-const CLOUD_FLARE_API_KEY = 'YOUR_CLOUDFLARE_API_KEY';
-const CLOUD_FLARE_EMAIL = 'YOUR_EMAIL@example.com';
-const CLOUDFLARE_ZONE_ID = 'YOUR_ZONE_ID';
+const CLOUDFLARE_API_KEY = 'YOUR_CLOUDFLARE_API_KEY';
+const CLOUDFLARE_EMAIL = 'YOUR_EMAIL@example.com';
+const CLOUDFLARE_ZONE_ID = 'YOUR_ZONE_ID';        // Use only one type of ID
+const CLOUDFLARE_ACCOUNT_ID = 'YOUR_ACCOUNT_ID';  // If both are set, ACCOUNT_ID takes precedence
+const CLOUDFLARE_NOTE = 'Auto-blocked by script';
 const ABUSEIPDB_API_KEY = 'YOUR_ABUSEIPDB_API_KEY';
 const BAN_IP_LIST = '/home/web/ipban.txt';
 
@@ -10,14 +12,25 @@ const BAN_IP_LIST = '/home/web/ipban.txt';
 const KEYWORDS = ['wp-login.php', 'xmlrpc.php', 'admin', 'sqlmap'];
 
 // Adjustable Parameters
-const TIME_WINDOW_SECONDS = 3600; // 1 hour
-const ABUSE_SCORE_THRESHOLD = 80;
-const LOG_LINE_COUNT = 1000;
-const REQUEST_THRESHOLD = 100;
+const TIME_WINDOW_SECONDS = 3600;
+const ABUSE_SCORE_THRESHOLD = 60;
+const LOG_LINE_COUNT = 10000;
+const REQUEST_THRESHOLD = 30;
 
 // 1. Extract suspicious IPs from recent log lines based on request frequency and keywords
 function get_suspicious_ips($logPath, $threshold = REQUEST_THRESHOLD): array {
-    exec("tail -n " . LOG_LINE_COUNT . " $logPath", $lines);
+    $cmd = "tail -n " . LOG_LINE_COUNT . " " . escapeshellarg($logPath) . " 2>&1";
+    exec($cmd, $lines, $ret);
+
+    if ($ret !== 0 || empty($lines)) {
+        echo "❌ Failed to read log file: $logPath\n";
+        echo "Command output:\n";
+        foreach ($lines as $line) {
+            echo "  $line\n";
+        }
+        return [];
+    }
+
     $ipCounts = [];
     $keywordHits = [];
     $result = [];
@@ -25,10 +38,15 @@ function get_suspicious_ips($logPath, $threshold = REQUEST_THRESHOLD): array {
     $recentLineFound = false;
 
     foreach ($lines as $line) {
-        if (preg_match('/^(\d+\.\d+\.\d+\.\d+) - - \[(.*?)\]/', $line, $match)) {
+    	//echo $line."<br>";
+        if (preg_match('/^([\d\.]+) [^\[]+ \[([^\]]+)/', $line, $match)) {
             $ip = $match[1];
             $timeStr = $match[2];
-            $timestamp = strtotime(substr($timeStr, 0, 20));
+
+            // Convert "02/Jun/2025:08:25:22 +0900" to "02 Jun 2025 08:25:22 +0900"
+            $timeFormatted = preg_replace('/^(\d{2})\/(\w{3})\/(\d{4}):/', '$1 $2 $3 ', $timeStr);
+            $timestamp = strtotime($timeFormatted);
+
             if ($timestamp === false || $timestamp < $timeLimit) {
                 continue;
             }
@@ -40,7 +58,7 @@ function get_suspicious_ips($logPath, $threshold = REQUEST_THRESHOLD): array {
 
             foreach (KEYWORDS as $kw) {
                 if (strpos($line, $kw) !== false) {
-                    $keywordHits[$ip] = true;
+                    $keywordHits[$ip] = $line;
                     break;
                 }
             }
@@ -53,8 +71,11 @@ function get_suspicious_ips($logPath, $threshold = REQUEST_THRESHOLD): array {
     }
 
     foreach ($ipCounts as $ip => $cnt) {
-        if ($cnt >= $threshold || isset($keywordHits[$ip])) {
+        if ($cnt >= $threshold) {
             $result[$ip] = $cnt;
+        }
+        else if(isset($keywordHits[$ip])) {
+        	$result[$ip] = $keywordHits[$ip];
         }
     }
 
@@ -84,14 +105,19 @@ function get_abuse_score($ip) {
 
 // 3. Block IP using Cloudflare API
 function block_ip_cloudflare($ip) {
-    $ch = curl_init("https://api.cloudflare.com/client/v4/zones/" . CLOUDFLARE_ZONE_ID . "/firewall/access_rules/rules");
+	$baseUrl = 'https://api.cloudflare.com/client/v4';
+	$endpoint = defined('CLOUDFLARE_ACCOUNT_ID') && CLOUDFLARE_ACCOUNT_ID
+	    ? "{$baseUrl}/accounts/" . CLOUDFLARE_ACCOUNT_ID . "/firewall/access_rules/rules"
+	    : "{$baseUrl}/zones/" . CLOUDFLARE_ZONE_ID . "/firewall/access_rules/rules";
+
+    $ch = curl_init($endpoint);
     $payload = json_encode([
         'mode' => 'block',
         'configuration' => [
             'target' => 'ip',
             'value' => $ip
         ],
-        'notes' => 'Auto-blocked by script'
+        'notes' => CLOUDFLARE_NOTE
     ]);
 
     curl_setopt_array($ch, [
@@ -99,8 +125,8 @@ function block_ip_cloudflare($ip) {
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $payload,
         CURLOPT_HTTPHEADER => [
-            "X-Auth-Email: " . CLOUD_FLARE_EMAIL,
-            "X-Auth-Key: " . CLOUD_FLARE_API_KEY,
+            "X-Auth-Email: " . CLOUDFLARE_EMAIL,
+            "X-Auth-Key: " . CLOUDFLARE_API_KEY,
             "Content-Type: application/json"
         ]
     ]);
@@ -116,10 +142,10 @@ function add_ip_to_php_denylist($ip, $filepath) {
 
 // === Execution starts here ===
 $ips = get_suspicious_ips(ACCESS_LOG);
+echo "<pre>";
 foreach ($ips as $ip => $cnt) {
     echo "Checking: $ip (Count: $cnt) ";
     $score = get_abuse_score($ip);
-    echo $cnt."<br>";
     if ($score >= ABUSE_SCORE_THRESHOLD) {
         echo "Blocking: $ip (Score: $score)\n";
         $res = block_ip_cloudflare($ip);
@@ -134,3 +160,4 @@ foreach ($ips as $ip => $cnt) {
         echo "Passed: $ip (Score: $score)\n";
     }
 }
+echo "</pre>";
