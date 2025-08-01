@@ -101,3 +101,7 @@ Result: {"success":true,"result":{...}}
 Passed: 198.51.100.10 (Score: 40)
 No suspicious IPs found within the last hour.
 ```
+
+## ☕ Support
+
+If you find this project helpful, you can [buy me a coffee](https://www.buymeacoffee.com/jcny) 🙏
